@@ -39,12 +39,26 @@ def _urlopen(url: str):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers))
 
 
+def _urlopen_with_retry(url: str, attempts: int = 5):
+    """Every request to arXiv's edge is subject to the same bot-mitigation
+    flakiness -- the metadata/ATOM endpoint 406s intermittently too, not just
+    PDF downloads. Retried here so a rate-limited pagination request doesn't
+    crash a run that already has successful downloads banked."""
+    for attempt in range(attempts):
+        try:
+            return _urlopen(url)
+        except urllib.error.HTTPError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(3 * (2**attempt), 30))
+
+
 def fetch_metadata_page(category: str, start: int, batch_size: int) -> List[Paper]:
     query = (
         f"?search_query=cat:{category}&start={start}&max_results={batch_size}"
         "&sortBy=submittedDate&sortOrder=descending"
     )
-    with _urlopen(ARXIV_API + query) as resp:
+    with _urlopen_with_retry(ARXIV_API + query) as resp:
         root = ET.fromstring(resp.read())
 
     papers: List[Paper] = []
@@ -58,17 +72,13 @@ def download_one(paper: Paper, out_dir: Path, attempts: int = 5) -> bool:
     dest = out_dir / f"{paper['id']}.pdf"
     if dest.exists():
         return True
-    for attempt in range(attempts):
-        try:
-            with _urlopen(paper["pdf_url"]) as resp, open(dest, "wb") as f:
-                f.write(resp.read())
-            return True
-        except urllib.error.HTTPError as e:
-            if attempt == attempts - 1:
-                print(f"  skipping {paper['id']}: {e}")
-                return False
-            time.sleep(min(3 * (2**attempt), 30))
-    return False
+    try:
+        with _urlopen_with_retry(paper["pdf_url"], attempts=attempts) as resp, open(dest, "wb") as f:
+            f.write(resp.read())
+        return True
+    except urllib.error.HTTPError as e:
+        print(f"  skipping {paper['id']}: {e}")
+        return False
 
 
 def download_until(category: str, out_dir: Path, target_count: int, max_candidates: int,
@@ -78,7 +88,11 @@ def download_until(category: str, out_dir: Path, target_count: int, max_candidat
     start = 0
     tried = 0
     while successes < target_count and tried < max_candidates:
-        batch = fetch_metadata_page(category, start, batch_size)
+        try:
+            batch = fetch_metadata_page(category, start, batch_size)
+        except urllib.error.HTTPError as e:
+            print(f"metadata request failed after retries, stopping with what we have: {e}")
+            break
         if not batch:
             break
         start += len(batch)

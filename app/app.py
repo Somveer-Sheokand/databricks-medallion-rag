@@ -180,6 +180,18 @@ def chat():
     if not query:
         return jsonify({"error": "empty query"}), 400
 
+    try:
+        return _answer(query, history)
+    except Exception as e:
+        # Any backend failure (index mid-rebuild, endpoint timeout, ...) must
+        # still come back as JSON -- Flask's default error page is HTML, and
+        # the client's `await res.json()` would otherwise throw a confusing
+        # "not valid JSON" error instead of surfacing anything useful.
+        app.logger.exception("chat request failed")
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
+
+
+def _answer(query: str, history: list) -> Response:
     embed_resp = w.serving_endpoints.query(name=EMBED_ENDPOINT, input=[query])
     query_vector = embed_resp.data[0].embedding
 

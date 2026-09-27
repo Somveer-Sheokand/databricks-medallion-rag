@@ -81,6 +81,17 @@ resources declared — see git history for the one-off creation script — since
 `app.py` needs `CAN_QUERY` on both serving endpoints and `SELECT` on
 `workspace.rag_demo.gold_chunks_index` granted to its own service principal.)
 
+**If you ever drop and recreate the vector index** (e.g. rebuilding from
+scratch), the app will start failing with `PermissionDenied: You do not have
+the SELECT privilege on ...` even though nothing about the app changed —
+the UC grant is tied to that specific index *object*, not its name, and a
+recreated index is a new object. Re-grant it (the error message gives you
+the exact principal to grant to):
+
+```sql
+GRANT SELECT ON TABLE workspace.rag_demo.gold_chunks_index TO `<service-principal-client-id>`;
+```
+
 ## Quickstart
 
 1. **Databricks side**: follow `databricks/README.md` end to end — Free
