@@ -91,8 +91,8 @@ chunked_df = (
     chunked_df.write.mode("overwrite")
     # See 01_bronze_ingest.py: dynamic partition overwrite so this write only
     # ever touches the source_dataset partitions it actually produced.
+    # (overwriteSchema is incompatible with dynamic partition overwrite mode.)
     .option("partitionOverwriteMode", "dynamic")
-    .option("overwriteSchema", "true")
     .partitionBy("source_dataset")
     .saveAsTable(silver_table)
 )

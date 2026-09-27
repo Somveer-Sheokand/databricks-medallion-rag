@@ -93,8 +93,10 @@ bronze_df = (
     # ever contains rows for `source_dataset`, so a static overwrite would
     # silently delete every OTHER dataset's partition from the table. This is
     # what makes "swap in a new document set" additive rather than destructive.
+    # (overwriteSchema is NOT compatible with dynamic partition overwrite --
+    # Delta rejects the combination outright, since other partitions would be
+    # left on the old schema. The schema here is stable across runs anyway.)
     .option("partitionOverwriteMode", "dynamic")
-    .option("overwriteSchema", "true")
     .partitionBy("source_dataset")
     .saveAsTable(bronze_table)
 )
