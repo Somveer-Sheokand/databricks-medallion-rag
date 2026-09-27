@@ -1,11 +1,20 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 02 - Silver: clean + chunk
-# MAGIC Cleans Bronze text with plain built-in string/regex functions, then chunks
-# MAGIC it with whichever strategy `chunking.strategy` in config.yaml selects
-# MAGIC ("fixed" or "recursive" -- see rag_common/chunking.py), and writes
-# MAGIC `silver_chunks`. Chunking runs as a `pandas_udf`: it does real per-row
-# MAGIC work (splitting, packing), unlike the cleaning step, so batching pays off.
+# MAGIC Cleans Bronze text with plain built-in string/regex functions (including
+# MAGIC dropping each paper's bibliography -- see `rag_common.cleaning.
+# MAGIC strip_references_section`, which keeps retrieval from surfacing
+# MAGIC citation-list chunks instead of actual content), then chunks it with
+# MAGIC whichever strategy `chunking.strategy` in config.yaml selects ("fixed" or
+# MAGIC "recursive" -- see `rag_common/chunking.py`), and writes `silver_chunks`.
+# MAGIC Chunking runs as a `pandas_udf`: it does real per-row work (splitting,
+# MAGIC packing), unlike the cleaning step, so batching pays off.
+# MAGIC
+# MAGIC **Incremental**: only chunks documents whose `doc_id` isn't already in
+# MAGIC `silver_chunks` (an anti-join against Bronze), then `MERGE ... WHEN NOT
+# MAGIC MATCHED THEN INSERT`s the result -- reruns only add rows for genuinely
+# MAGIC new documents, without re-chunking (or re-embedding, in Gold) everything
+# MAGIC that's already there.
 
 # COMMAND ----------
 
@@ -18,7 +27,7 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..", "..")))
 
 from rag_common.chunking import chunk_fixed_size, chunk_recursive
-from rag_common.cleaning import clean_text
+from rag_common.cleaning import clean_text, strip_references_section
 from rag_common.config import load_config
 from rag_common.hashing import chunk_id_for
 
@@ -29,12 +38,23 @@ silver_table = f"{cfg.catalog}.{cfg.schema}.silver_chunks"
 # COMMAND ----------
 
 import pandas as pd
+from delta.tables import DeltaTable
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 
 bronze_df = spark.table(bronze_table)
 
-clean_text_udf = F.udf(clean_text, StringType())
+silver_exists = spark.catalog.tableExists(silver_table)
+if silver_exists:
+    already_processed = spark.table(silver_table).select("doc_id").distinct()
+    bronze_df = bronze_df.join(already_processed, on="doc_id", how="left_anti")
+
+
+def _clean_and_strip_refs(text: str) -> str:
+    return strip_references_section(clean_text(text))
+
+
+clean_text_udf = F.udf(_clean_and_strip_refs, StringType())
 cleaned_df = bronze_df.withColumn("clean_text", clean_text_udf(F.col("raw_text")))
 
 # COMMAND ----------
@@ -87,14 +107,23 @@ chunked_df = (
 
 # COMMAND ----------
 
-(
-    chunked_df.write.mode("overwrite")
-    # See 01_bronze_ingest.py: dynamic partition overwrite so this write only
-    # ever touches the source_dataset partitions it actually produced.
-    # (overwriteSchema is incompatible with dynamic partition overwrite mode.)
-    .option("partitionOverwriteMode", "dynamic")
-    .partitionBy("source_dataset")
-    .saveAsTable(silver_table)
-)
+if silver_exists:
+    # chunked_df only contains chunks for doc_ids that were absent above, so
+    # every row is guaranteed "not matched" -- this is a pure insert, never an
+    # update. A plain `append` would do the same thing here, but MERGE is what
+    # protects against ever double-inserting if this cell is re-run before the
+    # anti-join's read is refreshed.
+    (
+        DeltaTable.forName(spark, silver_table).alias("t")
+        .merge(chunked_df.alias("s"), "t.chunk_id = s.chunk_id")
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+else:
+    (
+        chunked_df.write.mode("overwrite")
+        .partitionBy("source_dataset")
+        .saveAsTable(silver_table)
+    )
 
 display(spark.table(silver_table).limit(10))

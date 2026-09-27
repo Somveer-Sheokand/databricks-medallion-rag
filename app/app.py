@@ -19,6 +19,7 @@ VS_INDEX = f"{CATALOG}.{SCHEMA}.gold_chunks_index"
 EMBED_ENDPOINT = "databricks-gte-large-en"
 CHAT_ENDPOINT = "databricks-meta-llama-3-3-70b-instruct"
 TOP_K = 5
+MAX_HISTORY_MESSAGES = 6  # 3 turns; bounds prompt growth in a long session
 
 w = WorkspaceClient()
 
@@ -93,6 +94,7 @@ const messages = document.getElementById('messages');
 const form = document.getElementById('form');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
+let history = [];
 
 function addMessage(role, text) {
   const div = document.createElement('div');
@@ -139,7 +141,7 @@ form.addEventListener('submit', async (e) => {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, history }),
     });
     const data = await res.json();
     pending.classList.remove('pending');
@@ -148,6 +150,8 @@ form.addEventListener('submit', async (e) => {
     } else {
       pending.textContent = data.answer;
       renderSources(pending, data.sources);
+      history.push({ role: 'user', content: query }, { role: 'assistant', content: data.answer });
+      history = history.slice(-12); // keep last 6 turns client-side too
     }
   } catch (err) {
     pending.classList.remove('pending');
@@ -172,6 +176,7 @@ def index():
 def chat():
     data = request.get_json(force=True, silent=True) or {}
     query = (data.get("query") or "").strip()
+    history = data.get("history") or []
     if not query:
         return jsonify({"error": "empty query"}), 400
 
@@ -202,15 +207,25 @@ def chat():
     system_prompt = (
         "You are a research assistant. Answer the user's question using ONLY the "
         "numbered context snippets below, citing sources inline like [1] or [2]. "
-        "If the context doesn't contain the answer, say so honestly instead of guessing.\n\n"
+        "If the context doesn't contain the answer, say so honestly instead of guessing. "
+        "Earlier turns of this conversation may be included for follow-up context.\n\n"
         f"Context:\n{context}"
     )
+
+    history_messages = []
+    for turn in history[-MAX_HISTORY_MESSAGES:]:
+        role, content = turn.get("role"), (turn.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            history_messages.append(ChatMessage(
+                role=ChatMessageRole.USER if role == "user" else ChatMessageRole.ASSISTANT,
+                content=content,
+            ))
+
     chat_resp = w.serving_endpoints.query(
         name=CHAT_ENDPOINT,
-        messages=[
-            ChatMessage(role=ChatMessageRole.SYSTEM, content=system_prompt),
-            ChatMessage(role=ChatMessageRole.USER, content=query),
-        ],
+        messages=[ChatMessage(role=ChatMessageRole.SYSTEM, content=system_prompt)]
+        + history_messages
+        + [ChatMessage(role=ChatMessageRole.USER, content=query)],
         max_tokens=700,
     )
     answer = chat_resp.choices[0].message.content

@@ -10,14 +10,19 @@
 # MAGIC next to a **pandas_udf** (`extract_text_udf`, batched) on the same
 # MAGIC DataFrame, for a direct before/after comparison in the Spark UI.
 # MAGIC
-# MAGIC Installs `pypdf` itself rather than relying on `00_setup.py` having run
-# MAGIC first: `%pip install` is notebook-scoped and doesn't carry over between
-# MAGIC separate notebook runs (e.g. separate job tasks), even against the same
-# MAGIC cluster.
+# MAGIC Installs `pypdf`/`pdfplumber` itself rather than relying on
+# MAGIC `00_setup.py` having run first: `%pip install` is notebook-scoped and
+# MAGIC doesn't carry over between separate notebook runs (e.g. separate job
+# MAGIC tasks), even against the same cluster.
+# MAGIC
+# MAGIC Text extraction (`rag_common.extraction.extract_text`) falls back to
+# MAGIC pdfplumber when pypdf's output looks like it hit a font-encoding
+# MAGIC failure (some PDFs embed fonts with no ToUnicode CMap, which makes
+# MAGIC pypdf emit literal `/uniXXXXXXXX` glyph names instead of characters).
 
 # COMMAND ----------
 
-# MAGIC %pip install pypdf>=4.0.0
+# MAGIC %pip install pypdf>=4.0.0 pdfplumber>=0.11.0
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -31,6 +36,7 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..", "..")))
 
 from rag_common.config import load_config
+from rag_common.extraction import extract_text
 from rag_common.hashing import doc_id_for_path
 
 cfg = load_config()
@@ -43,27 +49,14 @@ bronze_table = f"{cfg.catalog}.{cfg.schema}.bronze_raw_docs"
 
 # COMMAND ----------
 
-from io import BytesIO
-
 import pandas as pd
-from pypdf import PdfReader
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
 
-def _extract_text(content: bytes, path: str) -> str:
-    if path.lower().endswith(".pdf"):
-        try:
-            reader = PdfReader(BytesIO(content))
-            return "\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception:
-            return ""
-    return content.decode("utf-8", errors="ignore")
-
-
 @F.pandas_udf(StringType())
 def extract_text_udf(content: pd.Series, path: pd.Series) -> pd.Series:
-    return pd.Series([_extract_text(c, p) for c, p in zip(content, path)])
+    return pd.Series([extract_text(c, p) for c, p in zip(content, path)])
 
 
 doc_id_udf = F.udf(doc_id_for_path, StringType())

@@ -13,7 +13,7 @@ Free Edition restricts outbound internet from notebooks, so download documents l
 
 ```bash
 # from the repo root, on your own machine
-python scripts/fetch_arxiv_sample.py --category cs.CL --max-results 25
+python scripts/fetch_arxiv_sample.py --category cs.CL --target-count 20
 databricks configure   # one-time: paste your workspace URL + a personal access token
 databricks fs cp -r ./local_docs/arxiv_sample dbfs:/Volumes/<catalog>/rag_demo/raw_docs/arxiv_sample
 ```
@@ -30,7 +30,7 @@ In order, either interactively or via the job below:
 4. `notebooks/03_gold_embed.py` — embeddings, enables Change Data Feed.
 5. `notebooks/04_create_vector_index.py` — creates/syncs the Vector Search index.
 
-Stretch: `notebooks/05_incremental_bronze.py` replaces step 2 with Auto Loader so reruns only process new files (see the notebook's docstring for how Silver/Gold can be made incremental too).
+Stretch: `notebooks/05_incremental_bronze.py` replaces step 2 with Auto Loader so reruns only process new files. Silver and Gold (steps 3-4) are already incremental regardless of which Bronze notebook you use — each anti-joins against what it's already processed and `MERGE`s in only the new rows (see `README.md`'s design-choices section).
 
 ## Scheduling
 

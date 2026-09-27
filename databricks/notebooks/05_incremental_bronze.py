@@ -11,15 +11,14 @@
 # MAGIC (it overwrites the table; this one appends to it) -- pick one ingestion
 # MAGIC path for `bronze_raw_docs`.
 # MAGIC
-# MAGIC Silver (`02_silver_chunk.py`) and Gold (`03_gold_embed.py`) can be made
-# MAGIC incremental the same way: since `chunk_id`/`doc_id` are deterministic
-# MAGIC hashes, swap their `overwrite` writes for a `MERGE ... WHEN NOT MATCHED
-# MAGIC THEN INSERT` keyed on those ids, so reruns only add rows for genuinely new
-# MAGIC documents.
+# MAGIC Silver (`02_silver_chunk.py`) and Gold (`03_gold_embed.py`) are already
+# MAGIC incremental regardless of which Bronze notebook feeds them: both
+# MAGIC anti-join against what they've already processed (keyed on `doc_id`/
+# MAGIC `chunk_id`) and `MERGE ... WHEN NOT MATCHED THEN INSERT` the rest.
 
 # COMMAND ----------
 
-# MAGIC %pip install pypdf>=4.0.0
+# MAGIC %pip install pypdf>=4.0.0 pdfplumber>=0.11.0
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -33,6 +32,7 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.getcwd(), "..", "..")))
 
 from rag_common.config import load_config
+from rag_common.extraction import extract_text
 from rag_common.hashing import doc_id_for_path
 
 cfg = load_config()
@@ -47,27 +47,14 @@ schema_path = f"/Volumes/{cfg.catalog}/{cfg.schema}/_schemas/bronze/{source_data
 
 # COMMAND ----------
 
-from io import BytesIO
-
 import pandas as pd
-from pypdf import PdfReader
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
 
-def _extract_text(content: bytes, path: str) -> str:
-    if path.lower().endswith(".pdf"):
-        try:
-            reader = PdfReader(BytesIO(content))
-            return "\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception:
-            return ""
-    return content.decode("utf-8", errors="ignore")
-
-
 @F.pandas_udf(StringType())
 def extract_text_udf(content: pd.Series, path: pd.Series) -> pd.Series:
-    return pd.Series([_extract_text(c, p) for c, p in zip(content, path)])
+    return pd.Series([extract_text(c, p) for c, p in zip(content, path)])
 
 
 doc_id_udf = F.udf(doc_id_for_path, StringType())

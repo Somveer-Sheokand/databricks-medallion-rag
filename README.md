@@ -19,8 +19,9 @@ Bronze (raw text) -> Silver (cleaned + chunked) -> Gold (embedded)
 - `config/config.yaml` — single source of truth for catalog/schema names,
   chunking strategy, embedding provider/model, vector search names. Read by
   both sides below.
-- `rag_common/` — pure-Python, no PySpark/Databricks import required. Chunking,
-  cleaning, hashing, embedding, config — unit-tested in `tests/`.
+- `rag_common/` — pure-Python, no PySpark/Databricks import required.
+  Chunking, cleaning, extraction (PDF, with a pdfplumber fallback), hashing,
+  embedding, config — unit-tested in `tests/`.
 - `databricks/notebooks/` — the actual pipeline, run inside Databricks. See
   `databricks/README.md` for setup and run order.
 - `mcp_server/` — the MCP server an agent talks to. `retrieve_context` embeds
@@ -40,6 +41,15 @@ then generates a cited answer via a chat serving endpoint
 (`databricks-meta-llama-3-3-70b-instruct`). Deployed as a Databricks App, so
 visitors authenticate with their own Databricks login — this isn't an
 anonymous public site, but nothing needs a personal access token either.
+
+The client keeps a rolling conversation history and sends it with each
+request, so follow-ups ("which one is faster?") resolve correctly — the chat
+model sees prior turns. **Retrieval itself is still single-turn**: only the
+latest question gets embedded and searched, not a history-aware rewrite of
+it, so a follow-up whose retrieval-relevant content was only implied by
+earlier turns may come back empty. Query rewriting (e.g. having the chat
+model expand "which one is faster?" into a self-contained question before
+embedding it) would close that gap but isn't implemented.
 
 Deploy or redeploy after code changes:
 
@@ -117,16 +127,23 @@ resources declared — see git history for the one-off creation script — since
   (`rag_common/embeddings.py:embed_texts_fmapi`), not `ai_query()` — that
   function only exists inside a Spark SQL/DataFrame context, and the MCP
   server runs as an external process.
-- **Dynamic partition overwrite on every Bronze/Silver/Gold write.** Each of
-  `01_bronze_ingest.py`/`02_silver_chunk.py`/`03_gold_embed.py` writes with
-  `.option("partitionOverwriteMode", "dynamic")`. Without it, Spark's default
-  *static* overwrite mode replaces the entire table on every write — so
-  ingesting a second dataset (e.g. AWS docs after arXiv) would silently delete
-  the first one's `source_dataset` partition, even though the table is
-  partitioned by it. Dynamic mode scopes the overwrite to only the partitions
-  the current write actually produced, which is what makes multiple datasets
-  coexist in one set of tables (and what the MCP tool's `source_filter`
-  assumes).
+- **Dynamic partition overwrite on Bronze's write.** `01_bronze_ingest.py`
+  writes with `.option("partitionOverwriteMode", "dynamic")`. Without it,
+  Spark's default *static* overwrite mode replaces the entire table on every
+  write — so ingesting a second dataset (e.g. AWS docs after arXiv) would
+  silently delete the first one's `source_dataset` partition, even though the
+  table is partitioned by it. Dynamic mode scopes the overwrite to only the
+  partitions the current write actually produced, which is what makes
+  multiple datasets coexist in one set of tables (and what the MCP tool's
+  `source_filter` assumes).
+- **Silver and Gold are incremental, keyed on `doc_id`/`chunk_id`.**
+  `02_silver_chunk.py` and `03_gold_embed.py` anti-join against what's already
+  in their output table, process only the new rows, and `MERGE ... WHEN NOT
+  MATCHED THEN INSERT` the result — a rerun neither re-chunks unchanged
+  documents nor pays to re-embed unchanged chunks. This trades off one thing:
+  a rerun after changing the chunking strategy or fixing a cleaning bug won't
+  retroactively reprocess documents already in Silver/Gold — drop the table
+  (or delete the affected rows) to force a full reprocess.
 
 ## Swapping the document set
 

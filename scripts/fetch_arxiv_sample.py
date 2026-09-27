@@ -3,8 +3,14 @@ to be uploaded to the Databricks Unity Catalog volume as Bronze input (see
 databricks/README.md). Runs on your own machine, not inside a notebook, so
 Free Edition's restricted outbound internet from notebooks is a non-issue.
 
+arXiv's edge aggressively rate-limits/bot-mitigates PDF downloads (expect
+maybe 20-40% of requests to succeed even with a proper User-Agent), so this
+paginates through metadata and keeps trying additional candidates until
+`--target-count` files have actually downloaded, rather than requesting a
+fixed batch and accepting whatever fraction gets through.
+
 Usage:
-    python scripts/fetch_arxiv_sample.py --category cs.CL --max-results 25
+    python scripts/fetch_arxiv_sample.py --category cs.CL --target-count 20
 """
 from __future__ import annotations
 
@@ -33,9 +39,9 @@ def _urlopen(url: str):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers))
 
 
-def fetch_metadata(category: str, max_results: int) -> List[Paper]:
+def fetch_metadata_page(category: str, start: int, batch_size: int) -> List[Paper]:
     query = (
-        f"?search_query=cat:{category}&start=0&max_results={max_results}"
+        f"?search_query=cat:{category}&start={start}&max_results={batch_size}"
         "&sortBy=submittedDate&sortOrder=descending"
     )
     with _urlopen(ARXIV_API + query) as resp:
@@ -48,36 +54,59 @@ def fetch_metadata(category: str, max_results: int) -> List[Paper]:
     return papers
 
 
-def download(papers: List[Paper], out_dir: Path) -> None:
+def download_one(paper: Paper, out_dir: Path, attempts: int = 5) -> bool:
+    dest = out_dir / f"{paper['id']}.pdf"
+    if dest.exists():
+        return True
+    for attempt in range(attempts):
+        try:
+            with _urlopen(paper["pdf_url"]) as resp, open(dest, "wb") as f:
+                f.write(resp.read())
+            return True
+        except urllib.error.HTTPError as e:
+            if attempt == attempts - 1:
+                print(f"  skipping {paper['id']}: {e}")
+                return False
+            time.sleep(min(3 * (2**attempt), 30))
+    return False
+
+
+def download_until(category: str, out_dir: Path, target_count: int, max_candidates: int,
+                    batch_size: int = 25) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
-    for paper in papers:
-        dest = out_dir / f"{paper['id']}.pdf"
-        if dest.exists():
-            continue
-        print(f"downloading {paper['id']}")
-        for attempt in range(3):
-            try:
-                with _urlopen(paper["pdf_url"]) as resp, open(dest, "wb") as f:
-                    f.write(resp.read())
+    successes = 0
+    start = 0
+    tried = 0
+    while successes < target_count and tried < max_candidates:
+        batch = fetch_metadata_page(category, start, batch_size)
+        if not batch:
+            break
+        start += len(batch)
+        for paper in batch:
+            if successes >= target_count or tried >= max_candidates:
                 break
-            except urllib.error.HTTPError as e:
-                if attempt == 2:
-                    print(f"  skipping {paper['id']}: {e}")
-                    break
-                time.sleep(2 * (attempt + 1))
-        time.sleep(1)  # be polite to arXiv's servers
+            tried += 1
+            print(f"[{successes}/{target_count}] downloading {paper['id']}")
+            if download_one(paper, out_dir):
+                successes += 1
+            time.sleep(1)  # be polite to arXiv's servers
+    return successes
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--category", default="cs.CL", help="arXiv category, e.g. cs.CL, cs.LG")
-    parser.add_argument("--max-results", type=int, default=25)
+    parser.add_argument("--target-count", type=int, default=20,
+                         help="Keep trying additional papers until this many actually download")
+    parser.add_argument("--max-candidates", type=int, default=120,
+                         help="Safety cap on total download attempts, in case of heavy rate-limiting")
     parser.add_argument("--out-dir", default="local_docs/arxiv_sample")
     args = parser.parse_args()
 
-    papers = fetch_metadata(args.category, args.max_results)
-    download(papers, Path(args.out_dir))
-    print(f"Downloaded {len(papers)} PDFs to {args.out_dir}")
+    successes = download_until(
+        args.category, Path(args.out_dir), args.target_count, args.max_candidates,
+    )
+    print(f"Downloaded {successes}/{args.target_count} target PDFs to {args.out_dir}")
 
 
 if __name__ == "__main__":

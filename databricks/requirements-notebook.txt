@@ -3,6 +3,7 @@
 # most images, but pinning them here too keeps `%pip install` idempotent.
 pyyaml>=6.0
 pypdf>=4.0.0
+pdfplumber>=0.11.0
 databricks-vectorsearch>=0.40
 
 # Only needed when config/config.yaml sets embedding.provider: local
