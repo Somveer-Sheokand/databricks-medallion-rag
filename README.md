@@ -61,7 +61,11 @@ Bronze (raw text) -> Silver (cleaned + chunked) -> Gold (embedded)
   created with `embedding_vector_column`, not `embedding_source_column`.
 - **Delta Sync Index, triggered sync.** Free Edition's single Vector Search
   unit doesn't support Direct Vector Access indexes; the pipeline job triggers
-  a sync as its last step rather than relying on continuous sync.
+  a sync as its last step rather than relying on continuous sync. Because of
+  that, Gold's writer also raises `delta.deletedFileRetentionDuration` to 30
+  days: a triggered (non-continuous) index's sync starts failing once more
+  than the retention window has passed since the last sync, and the Delta
+  default of 7 days is too short for a table you don't re-sync daily.
 - **Upload-to-volume ingestion, not fetch-in-notebook.** Free Edition
   restricts outbound internet from notebooks unless you verify with LinkedIn.
   `scripts/fetch_arxiv_sample.py` runs on your machine instead, then you

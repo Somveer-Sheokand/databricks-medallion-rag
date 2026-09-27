@@ -71,6 +71,13 @@ else:
     .saveAsTable(gold_table)
 )
 
-spark.sql(f"ALTER TABLE {gold_table} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
+spark.sql(
+    f"ALTER TABLE {gold_table} SET TBLPROPERTIES ("
+    "delta.enableChangeDataFeed = true, "
+    # The Delta Sync Index's sync fails once it's been longer than this
+    # since the last sync -- the default 7 days is too short for a
+    # TRIGGERED (not continuous) index you don't re-sync daily.
+    "delta.deletedFileRetentionDuration = 'interval 30 days')"
+)
 
 display(spark.table(gold_table).limit(10))
