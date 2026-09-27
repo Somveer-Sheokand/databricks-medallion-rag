@@ -28,6 +28,12 @@ Bronze (raw text) -> Silver (cleaned + chunked) -> Gold (embedded)
   the query and searches the Gold vector index.
 - `scripts/fetch_arxiv_sample.py` — downloads the default sample dataset
   locally, for upload to a Unity Catalog volume (see `databricks/README.md`).
+- `scripts/eval_retrieval.py` — one distinctive question per ingested
+  document, checked against the live index (needs `.env`/Databricks access,
+  so it's opt-in, not part of `pytest`). Run it after touching chunking,
+  cleaning, or the embedding model to catch a retrieval-quality regression:
+  `python scripts/eval_retrieval.py`. Update `EVAL_CASES` if you re-fetch a
+  different document set — see the script's docstring.
 - `app/` — a small Flask chat UI (retrieve + generate, with cited sources),
   deployed as a **Databricks App** so it runs inside the workspace with its
   own service-principal auth — no token ever leaves Databricks. See
