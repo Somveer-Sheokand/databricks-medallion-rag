@@ -19,6 +19,11 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install pypdf>=4.0.0
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
 import os
 import sys
 

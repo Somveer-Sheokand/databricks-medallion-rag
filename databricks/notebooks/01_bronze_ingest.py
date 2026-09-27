@@ -9,6 +9,16 @@
 # MAGIC Demonstrates a **scalar UDF** (`doc_id_for_path`, one Python call per row)
 # MAGIC next to a **pandas_udf** (`extract_text_udf`, batched) on the same
 # MAGIC DataFrame, for a direct before/after comparison in the Spark UI.
+# MAGIC
+# MAGIC Installs `pypdf` itself rather than relying on `00_setup.py` having run
+# MAGIC first: `%pip install` is notebook-scoped and doesn't carry over between
+# MAGIC separate notebook runs (e.g. separate job tasks), even against the same
+# MAGIC cluster.
+
+# COMMAND ----------
+
+# MAGIC %pip install pypdf>=4.0.0
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 

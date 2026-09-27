@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -17,6 +18,8 @@ from typing import List, TypedDict
 
 ARXIV_API = "http://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+# arXiv's CDN returns 406 Not Acceptable for urllib's default User-Agent.
+USER_AGENT = "varnam-agent/0.1 (https://github.com/Somveer-Sheokand/databricks-medallion-rag)"
 
 
 class Paper(TypedDict):
@@ -24,12 +27,18 @@ class Paper(TypedDict):
     pdf_url: str
 
 
+def _urlopen(url: str):
+    # arXiv's edge (Fastly/WAF) 406s requests missing either header, not just User-Agent.
+    headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+
+
 def fetch_metadata(category: str, max_results: int) -> List[Paper]:
     query = (
         f"?search_query=cat:{category}&start=0&max_results={max_results}"
         "&sortBy=submittedDate&sortOrder=descending"
     )
-    with urllib.request.urlopen(ARXIV_API + query) as resp:
+    with _urlopen(ARXIV_API + query) as resp:
         root = ET.fromstring(resp.read())
 
     papers: List[Paper] = []
@@ -46,7 +55,16 @@ def download(papers: List[Paper], out_dir: Path) -> None:
         if dest.exists():
             continue
         print(f"downloading {paper['id']}")
-        urllib.request.urlretrieve(paper["pdf_url"], dest)
+        for attempt in range(3):
+            try:
+                with _urlopen(paper["pdf_url"]) as resp, open(dest, "wb") as f:
+                    f.write(resp.read())
+                break
+            except urllib.error.HTTPError as e:
+                if attempt == 2:
+                    print(f"  skipping {paper['id']}: {e}")
+                    break
+                time.sleep(2 * (attempt + 1))
         time.sleep(1)  # be polite to arXiv's servers
 
 
