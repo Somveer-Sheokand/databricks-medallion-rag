@@ -27,6 +27,49 @@ Bronze (raw text) -> Silver (cleaned + chunked) -> Gold (embedded)
   the query and searches the Gold vector index.
 - `scripts/fetch_arxiv_sample.py` — downloads the default sample dataset
   locally, for upload to a Unity Catalog volume (see `databricks/README.md`).
+- `app/` — a small Flask chat UI (retrieve + generate, with cited sources),
+  deployed as a **Databricks App** so it runs inside the workspace with its
+  own service-principal auth — no token ever leaves Databricks. See
+  "Live chat app" below.
+
+## Live chat app
+
+`app/app.py` is a minimal RAG chat page: it embeds the question, calls
+`WorkspaceClient().vector_search_indexes.query_index` against the Gold index,
+then generates a cited answer via a chat serving endpoint
+(`databricks-meta-llama-3-3-70b-instruct`). Deployed as a Databricks App, so
+visitors authenticate with their own Databricks login — this isn't an
+anonymous public site, but nothing needs a personal access token either.
+
+Deploy or redeploy after code changes:
+
+```bash
+python -m venv .venv && .venv/Scripts/activate  # if not already set up
+pip install -e ".[dev]"
+cp .env.example .env   # fill in DATABRICKS_HOST / DATABRICKS_TOKEN once, for this script only
+python - <<'PY'
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path.cwd() / ".env")
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.workspace import ImportFormat
+from databricks.sdk.service.apps import AppDeployment
+
+w = WorkspaceClient()
+me = w.current_user.me().user_name
+source_path = f"/Workspace/Users/{me}/varnam-rag-chat-src"
+for fname in ["app.py", "app.yaml", "requirements.txt"]:
+    w.workspace.upload(f"{source_path}/{fname}", (Path("app") / fname).read_bytes(),
+                        format=ImportFormat.RAW, overwrite=True)
+print(w.apps.deploy_and_wait(app_name="varnam-rag-chat",
+                              app_deployment=AppDeployment(source_code_path=source_path)).status)
+PY
+```
+
+(First-time setup also needs `w.apps.create_and_wait(...)` with the app's
+resources declared — see git history for the one-off creation script — since
+`app.py` needs `CAN_QUERY` on both serving endpoints and `SELECT` on
+`workspace.rag_demo.gold_chunks_index` granted to its own service principal.)
 
 ## Quickstart
 
