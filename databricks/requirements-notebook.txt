@@ -1,0 +1,9 @@
+# Installed inside notebooks via `%pip install -r ../requirements-notebook.txt`
+# (see 00_setup.py). Databricks Runtime already ships pandas/pyspark/pyyaml in
+# most images, but pinning them here too keeps `%pip install` idempotent.
+pyyaml>=6.0
+pypdf>=4.0.0
+databricks-vectorsearch>=0.40
+
+# Only needed when config/config.yaml sets embedding.provider: local
+sentence-transformers>=3.0.0

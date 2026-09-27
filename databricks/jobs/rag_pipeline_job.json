@@ -1,0 +1,33 @@
+{
+  "name": "varnam-agent-rag-pipeline",
+  "tasks": [
+    {
+      "task_key": "bronze_ingest",
+      "notebook_task": {
+        "notebook_path": "<UPDATE_ME>/databricks/notebooks/01_bronze_ingest",
+        "base_parameters": { "source_dataset": "arxiv_sample" }
+      }
+    },
+    {
+      "task_key": "silver_chunk",
+      "depends_on": [{ "task_key": "bronze_ingest" }],
+      "notebook_task": {
+        "notebook_path": "<UPDATE_ME>/databricks/notebooks/02_silver_chunk"
+      }
+    },
+    {
+      "task_key": "gold_embed",
+      "depends_on": [{ "task_key": "silver_chunk" }],
+      "notebook_task": {
+        "notebook_path": "<UPDATE_ME>/databricks/notebooks/03_gold_embed"
+      }
+    },
+    {
+      "task_key": "sync_vector_index",
+      "depends_on": [{ "task_key": "gold_embed" }],
+      "notebook_task": {
+        "notebook_path": "<UPDATE_ME>/databricks/notebooks/04_create_vector_index"
+      }
+    }
+  ]
+}

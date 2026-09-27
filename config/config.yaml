@@ -1,0 +1,33 @@
+# Shared config for both the Databricks notebooks (databricks/notebooks/) and the
+# local MCP server (mcp_server/). Loaded by rag_common.config.load_config().
+#
+# `catalog` almost certainly needs editing: Free Edition auto-provisions a default
+# catalog whose name varies by account. Check Catalog Explorer after signup and
+# update this value (or set the VARNAM_CATALOG env var to override without editing
+# this file).
+catalog: workspace
+schema: rag_demo
+default_source_dataset: arxiv_sample
+
+chunking:
+  strategy: recursive # "fixed" or "recursive" -- see rag_common/chunking.py
+  chunk_size: 512 # approx. words per chunk (word-count proxy for tokens; swap in a
+  # real tokenizer here if you need exact alignment with your embedding model's
+  # token limit)
+  overlap: 75
+
+embedding:
+  provider: fmapi # "fmapi" (Databricks Foundation Model API, via built-in ai_query())
+  # or "local" (CPU sentence-transformers model, via pandas_udf)
+  endpoint_name: databricks-gte-large-en # used when provider == fmapi; confirm this
+  # endpoint exists under Serving > Foundation Models in your workspace
+  local_model_name: sentence-transformers/all-MiniLM-L6-v2 # used when provider == local
+  dimension: 1024 # must match the chosen model's output dimension
+  # (databricks-gte-large-en = 1024, all-MiniLM-L6-v2 = 384)
+
+vector_search:
+  endpoint_name: varnam-agent-vs-endpoint
+  index_name: gold_chunks_index
+
+retrieval:
+  default_top_k: 5
