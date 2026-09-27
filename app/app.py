@@ -7,7 +7,9 @@ principal credentials automatically -- no personal token involved.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 
 from flask import Flask, jsonify, request, Response
 from databricks.sdk import WorkspaceClient
@@ -22,6 +24,8 @@ TOP_K = 5
 MAX_HISTORY_MESSAGES = 6  # 3 turns; bounds prompt growth in a long session
 
 w = WorkspaceClient()
+log = logging.getLogger("varnam-rag-chat")
+logging.basicConfig(level=logging.INFO)
 
 
 app = Flask(__name__)
@@ -45,15 +49,29 @@ INDEX_HTML = """<!doctype html>
   }
   header {
     padding: 16px 20px; border-bottom: 1px solid var(--border);
-    display: flex; flex-direction: column; gap: 2px;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
   }
+  header .titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   header h1 { margin: 0; font-size: 16px; font-weight: 600; }
   header p { margin: 0; font-size: 12px; color: var(--muted); }
+  #doc-count { color: var(--accent); }
+  #new-chat {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 6px 12px; border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  #new-chat:hover { color: var(--text); border-color: var(--accent); }
   #messages {
     flex: 1; overflow-y: auto; padding: 20px; display: flex;
     flex-direction: column; gap: 16px; max-width: 760px; width: 100%;
     margin: 0 auto;
   }
+  #suggestions { display: flex; flex-direction: column; gap: 10px; margin: auto 0; }
+  #suggestions p { margin: 0 0 4px; color: var(--muted); font-size: 13px; }
+  .chip {
+    text-align: left; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 14px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  }
+  .chip:hover { border-color: var(--accent); }
   .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; font-size: 14px; white-space: pre-wrap; }
   .msg.user { align-self: flex-end; background: var(--user-bubble); }
   .msg.bot { align-self: flex-start; background: var(--bot-bubble); border: 1px solid var(--border); }
@@ -81,8 +99,12 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
   <header>
-    <h1>varnam-agent</h1>
-    <p>RAG chat over the arXiv sample &mdash; retrieval + generation on Databricks</p>
+    <div class="titles">
+      <h1>varnam-agent</h1>
+      <p>RAG chat over the arXiv sample &mdash; retrieval + generation on Databricks
+        (<span id="doc-count">loading…</span>)</p>
+    </div>
+    <button id="new-chat" type="button">New chat</button>
   </header>
   <div id="messages"></div>
   <form id="form">
@@ -94,7 +116,50 @@ const messages = document.getElementById('messages');
 const form = document.getElementById('form');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
+const newChatBtn = document.getElementById('new-chat');
+const docCountEl = document.getElementById('doc-count');
 let history = [];
+
+const SUGGESTIONS = [
+  'What are the main topics covered across these papers?',
+  'What methods do these papers use to evaluate their approach?',
+  'Are any of these papers about language model reliability or safety?',
+  'What are common themes across these papers’ datasets or benchmarks?',
+];
+
+function showSuggestions() {
+  messages.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.id = 'suggestions';
+  const label = document.createElement('p');
+  label.textContent = 'Not sure what to ask? Try one of these:';
+  wrap.appendChild(label);
+  SUGGESTIONS.forEach((q) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = q;
+    chip.addEventListener('click', () => { input.value = q; form.requestSubmit(); });
+    wrap.appendChild(chip);
+  });
+  messages.appendChild(wrap);
+}
+
+function loadDocCount() {
+  fetch('/api/info').then((r) => r.json()).then((d) => {
+    docCountEl.textContent = d.indexed_chunk_count != null
+      ? `${d.indexed_chunk_count} chunks indexed` : 'index status unknown';
+  }).catch(() => { docCountEl.textContent = 'index status unknown'; });
+}
+
+newChatBtn.addEventListener('click', () => {
+  history = [];
+  showSuggestions();
+  input.focus();
+});
+
+loadDocCount();
+showSuggestions();
 
 function addMessage(role, text) {
   const div = document.createElement('div');
@@ -134,6 +199,8 @@ form.addEventListener('submit', async (e) => {
   if (!query) return;
   input.value = '';
   send.disabled = true;
+  const suggestions = document.getElementById('suggestions');
+  if (suggestions) suggestions.remove();
   addMessage('user', query);
   const pending = addMessage('bot pending', 'Thinking…');
 
@@ -191,8 +258,55 @@ def chat():
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
 
 
+def _history_messages(history: list) -> list:
+    out = []
+    for turn in history[-MAX_HISTORY_MESSAGES:]:
+        role, content = turn.get("role"), (turn.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            out.append(ChatMessage(
+                role=ChatMessageRole.USER if role == "user" else ChatMessageRole.ASSISTANT,
+                content=content,
+            ))
+    return out
+
+
+def _rewrite_for_retrieval(query: str, history_messages: list) -> str:
+    """Follow-ups like "which one is faster?" retrieve nothing useful if
+    embedded as-is -- the retrieval-relevant noun phrase is in an earlier
+    turn, not this one. Ask the chat model to expand the follow-up into a
+    self-contained question before embedding it. Only called when there's
+    history; falls back to the original query if the rewrite call fails,
+    since a failed rewrite shouldn't break retrieval outright."""
+    if not history_messages:
+        return query
+    try:
+        resp = w.serving_endpoints.query(
+            name=CHAT_ENDPOINT,
+            messages=history_messages + [ChatMessage(
+                role=ChatMessageRole.USER,
+                content=(
+                    "Rewrite ONLY this follow-up question as a standalone question that "
+                    "captures its full meaning without needing the conversation above. "
+                    "Reply with ONLY the rewritten question, nothing else.\n\n"
+                    f"Follow-up: {query}"
+                ),
+            )],
+            max_tokens=150,
+            temperature=0.0,
+        )
+        rewritten = resp.choices[0].message.content.strip().strip('"')
+        return rewritten or query
+    except Exception:
+        log.exception("query rewrite failed, falling back to original query")
+        return query
+
+
 def _answer(query: str, history: list) -> Response:
-    embed_resp = w.serving_endpoints.query(name=EMBED_ENDPOINT, input=[query])
+    t0 = time.time()
+    history_messages = _history_messages(history)
+    retrieval_query = _rewrite_for_retrieval(query, history_messages)
+
+    embed_resp = w.serving_endpoints.query(name=EMBED_ENDPOINT, input=[retrieval_query])
     query_vector = embed_resp.data[0].embedding
 
     results = w.vector_search_indexes.query_index(
@@ -212,6 +326,11 @@ def _answer(query: str, history: list) -> Response:
             "score": row[-1],
         })
 
+    log.info(
+        "query=%r retrieval_query=%r hits=%d top_score=%s elapsed=%.2fs",
+        query, retrieval_query, len(hits), hits[0]["score"] if hits else None, time.time() - t0,
+    )
+
     if not hits:
         return jsonify({"answer": "No matching content found in the index.", "sources": []})
 
@@ -224,15 +343,6 @@ def _answer(query: str, history: list) -> Response:
         f"Context:\n{context}"
     )
 
-    history_messages = []
-    for turn in history[-MAX_HISTORY_MESSAGES:]:
-        role, content = turn.get("role"), (turn.get("content") or "").strip()
-        if role in ("user", "assistant") and content:
-            history_messages.append(ChatMessage(
-                role=ChatMessageRole.USER if role == "user" else ChatMessageRole.ASSISTANT,
-                content=content,
-            ))
-
     chat_resp = w.serving_endpoints.query(
         name=CHAT_ENDPOINT,
         messages=[ChatMessage(role=ChatMessageRole.SYSTEM, content=system_prompt)]
@@ -243,6 +353,16 @@ def _answer(query: str, history: list) -> Response:
     answer = chat_resp.choices[0].message.content
 
     return jsonify({"answer": answer, "sources": hits})
+
+
+@app.route("/api/info")
+def info():
+    try:
+        status = w.vector_search_indexes.get_index(VS_INDEX).status
+        return jsonify({"indexed_chunk_count": status.indexed_row_count})
+    except Exception:
+        log.exception("index status lookup failed")
+        return jsonify({"indexed_chunk_count": None})
 
 
 @app.route("/healthz")

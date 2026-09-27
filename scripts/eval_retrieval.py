@@ -69,6 +69,14 @@ EVAL_CASES: List[EvalCase] = [
              "71f18db0c5d74d02", "JevOut: Natural Context Can Flip Decision Models"),
     EvalCase("How do agents detect online conspiratorial discourse?",
              "9771115aa1ed666b", "Agentic Detection of Online Conspiracies"),
+    EvalCase("How does multimodal thinking work with renderable programs?",
+             "1909c3f594e371b3", "Multimodal Thinking with Renderable Programs"),
+    EvalCase("What are anchored extra-proximal methods for monotone inclusion problems?",
+             "8e7857f690cee926", "Anchored Extra-Proximal Methods for Monotone Inclusion"),
+    EvalCase("How does minimally invasive steering adapt a frozen language model at test time?",
+             "db73e597036b226c", "Minimally Invasive Steering of Language Models"),
+    EvalCase("How does temporal gradient inversion reconstruct private trajectories in embodied RL?",
+             "7c7d8d5c4fe54868", "Temporal Gradient Inversion for Private Trajectory Reconstruction"),
 ]
 
 TOP_K = 5
